@@ -1,7 +1,6 @@
 class _JediError(Exception):
     pass
 
-
 class InternalError(_JediError):
     """
     This error might happen a subprocess is crashing. The reason for this is
@@ -10,13 +9,11 @@ class InternalError(_JediError):
     result in the same error again.
     """
 
-
 class WrongVersion(_JediError):
     """
     This error is reserved for the future, shouldn't really be happening at the
     moment.
     """
-
 
 class RefactoringError(_JediError):
     """
