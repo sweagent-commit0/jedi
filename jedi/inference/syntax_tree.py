@@ -38,13 +38,22 @@ def _limit_value_infers(func):
     I'm still not sure this is the way to go, but it looks okay for now and we
     can still go anther way in the future. Tests are there. ~ dave
     """
-    pass
+    def wrapper(*args, **kwargs):
+        inference_state = args[0].inference_state
+        try:
+            inference_state.inferred_element_counts[func] += 1
+            if inference_state.inferred_element_counts[func] > 300:
+                return NO_VALUES
+        except KeyError:
+            inference_state.inferred_element_counts[func] = 1
+        return func(*args, **kwargs)
+    return wrapper
 
 def _infer_node_if_inferred(context, element):
     """
     TODO This function is temporary: Merge with infer_node.
     """
-    pass
+    return context.infer_node(element)
 
 def infer_atom(context, atom):
     """
@@ -52,7 +61,17 @@ def infer_atom(context, atom):
     generate the node (because it has just one child). In that case an atom
     might be a name or a literal as well.
     """
-    pass
+    if atom.type == 'atom':
+        first_child = atom.children[0]
+        if first_child.type == 'name':
+            return context.infer_node(first_child)
+        elif first_child in ('(', '[', '{'):
+            return context.infer_node(atom.children[1])
+    elif atom.type == 'name':
+        return context.infer_node(atom)
+    elif atom.type in ('number', 'string', 'keyword'):
+        return ValueSet([compiled.create_simple_object(context.inference_state, atom.value)])
+    return NO_VALUES
 
 @debug.increase_indent
 def _infer_expr_stmt(context, stmt, seek_name=None):
@@ -70,22 +89,58 @@ def _infer_expr_stmt(context, stmt, seek_name=None):
 
     :param stmt: A `tree.ExprStmt`.
     """
-    pass
+    if seek_name:
+        definition = context.tree_node.get_definition()
+        if definition is not None and definition.type == 'comp_for':
+            return ValueSet([iterable.CompForName(
+                CompForContext(context, definition),
+                seek_name,
+            )])
+
+    rhs = stmt.get_rhs()
+    value_set = context.infer_node(rhs)
+    if seek_name:
+        return value_set.filter(lambda value: value.name.value == seek_name)
+
+    return value_set
 
 @iterator_to_value_set
 def infer_factor(value_set, operator):
     """
     Calculates `+`, `-`, `~` and `not` prefixes.
     """
-    pass
+    for value in value_set:
+        if operator == '-':
+            if is_number(value):
+                yield value.negate()
+        elif operator == 'not':
+            yield compiled.create_simple_object(next(iter(value_set))._inference_state, not value.py__bool__())
+        elif operator == '~':
+            if is_number(value):
+                yield value.invert()
+        else:
+            yield value
 
+@inference_state_method_cache()
 @inference_state_method_cache()
 def _apply_decorators(context, node):
     """
     Returns the function, that should to be executed in the end.
     This is also the places where the decorators are processed.
     """
-    pass
+    decorators = node.get_decorators()
+    if not decorators:
+        return context.infer_node(node.children[-1])
+    
+    values = context.infer_node(node.children[-1])
+    for decorator in reversed(decorators):
+        dec_values = context.infer_node(decorator.children[1])
+        values = ValueSet.from_sets(
+            dec_value.execute(arguments.ValuesArguments([value]))
+            for dec_value in dec_values
+            for value in values
+        )
+    return values
 
 def check_tuple_assignments(name, value_set):
     """
@@ -94,10 +149,29 @@ def check_tuple_assignments(name, value_set):
     pass
 
 class ContextualizedSubscriptListNode(ContextualizedNode):
-    pass
+    def infer(self):
+        return _infer_subscript_list(self.context, self.node)
 
 def _infer_subscript_list(context, index):
     """
     Handles slices in subscript nodes.
     """
-    pass
+    if index == ':':
+        return ValueSet([compiled.create_simple_object(context.inference_state, slice(None, None, None))])
+    elif index.type == 'subscript':
+        start = index.children[0] if index.children[0] != ':' else None
+        stop = index.children[2] if len(index.children) > 2 and index.children[2] != ':' else None
+        step = index.children[4] if len(index.children) > 4 else None
+        
+        start_values = context.infer_node(start) if start else ValueSet([compiled.create_simple_object(context.inference_state, None)])
+        stop_values = context.infer_node(stop) if stop else ValueSet([compiled.create_simple_object(context.inference_state, None)])
+        step_values = context.infer_node(step) if step else ValueSet([compiled.create_simple_object(context.inference_state, None)])
+        
+        return ValueSet([
+            compiled.create_simple_object(context.inference_state, slice(s.obj, e.obj, t.obj))
+            for s in start_values
+            for e in stop_values
+            for t in step_values
+        ])
+    else:
+        return context.infer_node(index)
